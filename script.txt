@@ -1,0 +1,117 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+
+"""
+Sorts photo files into per-person folders based on roster.csv ID lookup.
+
+Files are named [ID]_[counter].jpg (e.g., 0001_0001.jpg).
+For each file, looks up the ID in roster.csv, creates a folder named
+[ID]_[lastName]_[firstName], and moves the file into it (renamed to
+match).
+
+Run this script from inside the folder containing roster.csv and the
+photo files, or pass --csv / --folder explicitly.
+
+Usage:
+    uv run sort_roster.py --dry-run
+    uv run sort_roster.py
+"""
+
+import argparse
+import csv
+import re
+import sys
+from pathlib import Path
+
+FILENAME_RE = re.compile(r"^(?P<id>\d+)_(?P<counter>\d+)$")
+INVALID_CHARS_RE = re.compile(r'[\\/:*?"<>|]')
+
+
+def load_roster(csv_path: Path) -> dict[str, dict]:
+    if not csv_path.exists():
+        print(f"ERROR: CSV file not found: {csv_path}", file=sys.stderr)
+        sys.exit(1)
+
+    lookup: dict[str, dict] = {}
+    with csv_path.open(newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rid = row["ID"].strip()
+            if rid in lookup:
+                print(f"WARNING: duplicate ID '{rid}' in CSV, using first occurrence")
+                continue
+            lookup[rid] = row
+    return lookup
+
+
+def sanitize(value: str) -> str:
+    return INVALID_CHARS_RE.sub("", value).strip()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Sort files into per-person folders based on roster.csv")
+    parser.add_argument("--csv", default="roster.csv", type=Path)
+    parser.add_argument("--folder", default=".", type=Path)
+    parser.add_argument("--ext", default=".jpg", help="File extension to match (default: .jpg)")
+    parser.add_argument("--dry-run", action="store_true", help="Preview without moving")
+    args = parser.parse_args()
+
+    roster = load_roster(args.csv)
+
+    files = sorted(args.folder.glob(f"*{args.ext}"))
+    if not files:
+        print(f"No matching {args.ext} files found in {args.folder}")
+        return
+
+    success = skip = error = 0
+
+    for file in files:
+        m = FILENAME_RE.match(file.stem)
+        if not m:
+            print(f"SKIP  (bad pattern): {file.name}")
+            skip += 1
+            continue
+
+        fid, counter = m.group("id"), m.group("counter")
+        entry = roster.get(fid)
+
+        if not entry:
+            print(f"SKIP  (no CSV match for ID '{fid}'): {file.name}")
+            skip += 1
+            continue
+
+        first = sanitize(entry.get("firstName", ""))
+        last = sanitize(entry.get("lastName", ""))
+
+        folder_name = f"{fid}_{last}_{first}"
+        target_dir = args.folder / folder_name
+        new_name = f"{fid}_{last}_{first}_{counter}{file.suffix}"
+        new_path = target_dir / new_name
+
+        if new_path.exists():
+            print(f"SKIP  (target exists): {folder_name}/{new_name}")
+            skip += 1
+            continue
+
+        try:
+            if args.dry_run:
+                print(f"[DRY RUN] {file.name} -> {folder_name}/{new_name}")
+            else:
+                target_dir.mkdir(parents=True, exist_ok=True)
+                file.rename(new_path)
+                print(f"OK    {file.name} -> {folder_name}/{new_name}")
+            success += 1
+        except OSError as e:
+            print(f"ERROR moving {file.name}: {e}", file=sys.stderr)
+            error += 1
+
+    print("\n--- Summary ---")
+    print(f"Moved:   {success}")
+    print(f"Skipped: {skip}")
+    print(f"Errors:  {error}")
+
+
+if __name__ == "__main__":
+    main()
