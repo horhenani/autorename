@@ -1,0 +1,3 @@
+Get-ChildItem -File | ForEach-Object {
+    $_.BaseName -replace '_\d+$', ''
+} | Sort-Object -Unique | Out-File "names.txt"
